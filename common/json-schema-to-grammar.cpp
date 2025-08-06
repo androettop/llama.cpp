@@ -1,5 +1,6 @@
 #include "json-schema-to-grammar.h"
 #include "common.h"
+#include "log.h"
 
 #include <nlohmann/json.hpp>
 
@@ -991,10 +992,15 @@ std::string build_grammar(const std::function<void(const common_grammar_builder 
     SchemaConverter converter([&](const std::string &) { return json(); }, options.dotall, options.harmony_mode);
     common_grammar_builder builder {
         /* .add_rule = */ [&](const std::string & name, const std::string & rule) {
+            // Log before returning the rule
+            LOG_INF("Adding rule for %s: %s\n", name.c_str(), rule.c_str());
             return converter._add_rule(name, rule);
         },
         /* .add_schema = */ [&](const std::string & name, const nlohmann::ordered_json & schema) {
-            return converter.visit(schema, name == "root" ? "" : name);
+            // Log before returning the rule
+            std::string rule = converter.visit(schema, name == "root" ? "" : name);
+            LOG_INF("Adding rule for %s: %s\n", name.c_str(), rule.c_str());
+            return rule;
         },
         /* .resolve_refs = */ [&](nlohmann::ordered_json & schema) {
             converter.resolve_refs(schema, "");
@@ -1002,5 +1008,8 @@ std::string build_grammar(const std::function<void(const common_grammar_builder 
     };
     cb(builder);
     converter.check_errors();
-    return converter.format_grammar();
+    // log the format grammar before returning
+    std::string formatted_grammar = converter.format_grammar();
+    LOG_INF("Formatted grammar:\n%s\n", formatted_grammar.c_str());
+    return formatted_grammar;
 }

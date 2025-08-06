@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "frutas_tropicales": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-zÁáÉéÍíÓóÚúÑñ ]+$"
+      },
+      "minItems": 4,
+      "maxItems": 4,
+      "description": "Lista de exactamente 4 nombres de frutas tropicales"
+    }
+  },
+  "required": ["frutas_tropicales"],
+  "additionalProperties": false
+}
