@@ -307,6 +307,7 @@ private:
     friend std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options);
     std::function<json(const std::string &)> _fetch_json;
     bool _dotall;
+    bool _harmony_mode;
     std::map<std::string, std::string> _rules;
     std::unordered_map<std::string, json> _refs;
     std::unordered_set<std::string> _refs_being_resolved;
@@ -327,6 +328,22 @@ private:
             _rules[key] = rule;
             return key;
         }
+    }
+
+    std::string _build_harmony_rule(const std::string & json_rule) {
+        // Permite cualquier contenido hasta encontrar el patrón harmony
+        // Usamos una gramática que permite cualquier carácter hasta encontrar exactamente el patrón
+        std::string any_char_rule = _add_rule("any-char", "[\\U00000000-\\U0010FFFF]");
+        std::string prefix_rule = _add_rule("harmony-prefix", any_char_rule + "*");
+        std::string pattern = "\"<|channel|>final<|message|>\"";
+        return prefix_rule + " " + pattern + " " + json_rule;
+    }
+
+    std::string _maybe_apply_harmony(const std::string & rule_name, const std::string & rule) {
+        if (_harmony_mode && rule_name == "root") {
+            return _build_harmony_rule(rule);
+        }
+        return rule;
     }
 
     std::string _generate_union_rule(const std::string & name, const std::vector<json> & alt_schemas) {
@@ -527,7 +544,7 @@ private:
             }
             return join_seq();
         };
-        return _add_rule(name, "\"\\\"\" (" + to_rule(transform()) + ") \"\\\"\" space");
+        return _add_rule(name, _maybe_apply_harmony(name, "\"\\\"\" (" + to_rule(transform()) + ") \"\\\"\" space"));
     }
 
     /*
@@ -725,8 +742,9 @@ private:
 public:
     SchemaConverter(
         const std::function<json(const std::string &)> & fetch_json,
-        bool dotall)
-          : _fetch_json(fetch_json), _dotall(dotall)
+        bool dotall,
+        bool harmony_mode = false)
+          : _fetch_json(fetch_json), _dotall(dotall), _harmony_mode(harmony_mode)
     {
         _rules["space"] = SPACE_RULE;
     }
@@ -802,10 +820,10 @@ public:
         std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
 
         if (schema.contains("$ref")) {
-            return _add_rule(rule_name, _resolve_ref(schema["$ref"]));
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _resolve_ref(schema["$ref"])));
         } else if (schema.contains("oneOf") || schema.contains("anyOf")) {
             std::vector<json> alt_schemas = schema.contains("oneOf") ? schema["oneOf"].get<std::vector<json>>() : schema["anyOf"].get<std::vector<json>>();
-            return _add_rule(rule_name, _generate_union_rule(name, alt_schemas));
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _generate_union_rule(name, alt_schemas)));
         } else if (schema_type.is_array()) {
             std::vector<json> schema_types;
             for (const auto & t : schema_type) {
@@ -813,15 +831,15 @@ public:
                 schema_copy["type"] = t;
                 schema_types.push_back(schema_copy);
             }
-            return _add_rule(rule_name, _generate_union_rule(name, schema_types));
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _generate_union_rule(name, schema_types)));
         } else if (schema.contains("const")) {
-            return _add_rule(rule_name, _generate_constant_rule(schema["const"]) + " space");
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _generate_constant_rule(schema["const"]) + " space"));
         } else if (schema.contains("enum")) {
             std::vector<std::string> enum_values;
             for (const auto & v : schema["enum"]) {
                 enum_values.push_back(_generate_constant_rule(v));
             }
-            return _add_rule(rule_name, "(" + string_join(enum_values, " | ") + ") space");
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, "(" + string_join(enum_values, " | ") + ") space"));
         } else if ((schema_type.is_null() || schema_type == "object")
                 && (schema.contains("properties") ||
                     (schema.contains("additionalProperties") && schema["additionalProperties"] != true))) {
@@ -840,9 +858,10 @@ public:
                 }
             }
             return _add_rule(rule_name,
-                _build_object_rule(
-                    properties, required, name,
-                    schema.contains("additionalProperties") ? schema["additionalProperties"] : json()));
+                _maybe_apply_harmony(rule_name, 
+                    _build_object_rule(
+                        properties, required, name,
+                        schema.contains("additionalProperties") ? schema["additionalProperties"] : json())));
         } else if ((schema_type.is_null() || schema_type == "object") && schema.contains("allOf")) {
             std::unordered_set<std::string> required;
             std::vector<std::pair<std::string, json>> properties;
@@ -870,7 +889,7 @@ public:
                     add_component(t, true);
                 }
             }
-            return _add_rule(rule_name, _build_object_rule(properties, required, hybrid_name, json()));
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _build_object_rule(properties, required, hybrid_name, json())));
         } else if ((schema_type.is_null() || schema_type == "array") && (schema.contains("items") || schema.contains("prefixItems"))) {
             json items = schema.contains("items") ? schema["items"] : schema["prefixItems"];
             if (items.is_array()) {
@@ -882,14 +901,14 @@ public:
                     rule += visit(items[i], name + (name.empty() ? "" : "-") + "tuple-" + std::to_string(i));
                 }
                 rule += " \"]\" space";
-                return _add_rule(rule_name, rule);
+                return _add_rule(rule_name, _maybe_apply_harmony(rule_name, rule));
             } else {
                 std::string item_rule_name = visit(items, name + (name.empty() ? "" : "-") + "item");
                 int min_items = schema.contains("minItems") ? schema["minItems"].get<int>() : 0;
                 json max_items_json = schema.contains("maxItems") ? schema["maxItems"] : json();
                 int max_items = max_items_json.is_number_integer() ? max_items_json.get<int>() : std::numeric_limits<int>::max();
 
-                return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, min_items, max_items, "\",\" space") + " \"]\" space");
+                return _add_rule(rule_name, _maybe_apply_harmony(rule_name, "\"[\" space " + build_repetition(item_rule_name, min_items, max_items, "\",\" space") + " \"]\" space"));
             }
         } else if ((schema_type.is_null() || schema_type == "string") && schema.contains("pattern")) {
             return _visit_pattern(schema["pattern"], rule_name);
@@ -897,12 +916,12 @@ public:
             return _add_primitive(rule_name == "root" ? "root" : schema_format, PRIMITIVE_RULES.at("uuid"));
         } else if ((schema_type.is_null() || schema_type == "string") && STRING_FORMAT_RULES.find(schema_format + "-string") != STRING_FORMAT_RULES.end()) {
             auto prim_name = schema_format + "-string";
-            return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name))));
         } else if (schema_type == "string" && (schema.contains("minLength") || schema.contains("maxLength"))) {
             std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
             int min_len = schema.contains("minLength") ? schema["minLength"].get<int>() : 0;
             int max_len = schema.contains("maxLength") ? schema["maxLength"].get<int>() : std::numeric_limits<int>::max();
-            return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, min_len, max_len) + " \"\\\"\" space");
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, "\"\\\"\" " + build_repetition(char_rule, min_len, max_len) + " \"\\\"\" space"));
         } else if (schema_type == "integer" && (schema.contains("minimum") || schema.contains("exclusiveMinimum") || schema.contains("maximum") || schema.contains("exclusiveMaximum"))) {
             int min_value = std::numeric_limits<int>::min();
             int max_value = std::numeric_limits<int>::max();
@@ -920,9 +939,9 @@ public:
             out << "(";
             _build_min_max_int(min_value, max_value, out);
             out << ") space";
-            return _add_rule(rule_name, out.str());
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, out.str()));
         } else if (schema.empty() || schema_type == "object") {
-            return _add_rule(rule_name, _add_primitive("object", PRIMITIVE_RULES.at("object")));
+            return _add_rule(rule_name, _maybe_apply_harmony(rule_name, _add_primitive("object", PRIMITIVE_RULES.at("object"))));
         } else {
             if (!schema_type.is_string() || PRIMITIVE_RULES.find(schema_type.get<std::string>()) == PRIMITIVE_RULES.end()) {
                 _errors.push_back("Unrecognized schema: " + schema.dump());
@@ -951,7 +970,7 @@ public:
     }
 };
 
-std::string json_schema_to_grammar(const json & schema, bool force_gbnf) {
+std::string json_schema_to_grammar(const json & schema, bool force_gbnf, bool harmony_mode) {
 #ifdef LLAMA_USE_LLGUIDANCE
     if (!force_gbnf) {
         return "%llguidance {}\nstart: %json " + schema.dump();
@@ -959,15 +978,17 @@ std::string json_schema_to_grammar(const json & schema, bool force_gbnf) {
 #else
     (void)force_gbnf;
 #endif // LLAMA_USE_LLGUIDANCE
+    common_grammar_options options;
+    options.harmony_mode = harmony_mode;
     return build_grammar([&](const common_grammar_builder & callbacks) {
         auto copy = schema;
         callbacks.resolve_refs(copy);
         callbacks.add_schema("", copy);
-    });
+    }, options);
 }
 
 std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options) {
-    SchemaConverter converter([&](const std::string &) { return json(); }, options.dotall);
+    SchemaConverter converter([&](const std::string &) { return json(); }, options.dotall, options.harmony_mode);
     common_grammar_builder builder {
         /* .add_rule = */ [&](const std::string & name, const std::string & rule) {
             return converter._add_rule(name, rule);

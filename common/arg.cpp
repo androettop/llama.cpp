@@ -1989,6 +1989,30 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_sparam());
     add_opt(common_arg(
+        {"-jh", "--json-schema-harmony"}, "SCHEMA",
+        "JSON schema to constrain generations with harmony reasoning mode (applies only to final message after <|channel|>final<|message|>)",
+        [](common_params & params, const std::string & value) {
+            params.sampling.grammar = json_schema_to_grammar(json::parse(value), false, true);
+        }
+    ).set_sparam());
+    add_opt(common_arg(
+        {"-jhf", "--json-schema-harmony-file"}, "FILE",
+        "File containing a JSON schema to constrain generations with harmony reasoning mode (applies only to final message after <|channel|>final<|message|>)",
+        [](common_params & params, const std::string & value) {
+            std::ifstream file(value);
+            if (!file) {
+                throw std::runtime_error(string_format("error: failed to open file '%s'\n", value.c_str()));
+            }
+            std::string schema;
+            std::copy(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>(),
+                std::back_inserter(schema)
+            );
+            params.sampling.grammar = json_schema_to_grammar(json::parse(schema), false, true);
+        }
+    ).set_sparam());
+    add_opt(common_arg(
         {"--pooling"}, "{none,mean,cls,last,rank}",
         "pooling type for embeddings, use model default if unspecified",
         [](common_params & params, const std::string & value) {

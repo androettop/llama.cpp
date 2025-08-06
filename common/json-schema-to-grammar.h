@@ -6,7 +6,8 @@
 #include <string>
 
 std::string json_schema_to_grammar(const nlohmann::ordered_json & schema,
-                                   bool force_gbnf = false);
+                                   bool force_gbnf = false,
+                                   bool harmony_mode = false);
 
 struct common_grammar_builder {
     std::function<std::string(const std::string &, const std::string &)> add_rule;
@@ -16,6 +17,7 @@ struct common_grammar_builder {
 
 struct common_grammar_options {
     bool dotall = false;
+    bool harmony_mode = false;
 };
 
 std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options = {});
